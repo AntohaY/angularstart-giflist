@@ -35,21 +35,21 @@ export class RedditService {
     pagination$ = new Subject<string | null>();
 
     private subredditChanged$ = this.subredditFormControl.valueChanges.pipe(
-        debounceTime(300),
-        distinctUntilChanged(),
-        startWith('gifs'),
-        map((subreddit) => (subreddit.length ? subreddit: 'gifs'))
+      debounceTime(300),
+      distinctUntilChanged(),
+      startWith('gifs'),
+      map((subreddit) => (subreddit.length ? subreddit: 'gifs'))
     );
 
     private gifsLoaded$ = this.subredditChanged$.pipe(
-        switchMap((subreddit) =>
-            this.pagination$.pipe(
-                startWith(null),
-                concatMap((lastKnownGif) => 
-                    this.fetchFromReddit(subreddit, lastKnownGif, 20)
-                )
-            )
+      switchMap((subreddit) =>
+        this.pagination$.pipe(
+          startWith(null),
+          concatMap((lastKnownGif) => 
+            this.fetchFromReddit(subreddit, lastKnownGif, 20)
+          )
         )
+      )
     )
 
     constructor() {
