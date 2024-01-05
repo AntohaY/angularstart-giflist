@@ -1,8 +1,8 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Gif, RedditPost, RedditResponse } from '../interfaces';
-import { EMPTY, Subject, catchError, concatMap, debounceTime, distinctUntilChanged, map, of, startWith, switchMap } from 'rxjs';
-import { HttpClient } from '@angular/common/http';
+import { EMPTY, Subject, catchError, concatMap, debounceTime, distinctUntilChanged, expand, map, of, startWith, switchMap } from 'rxjs';
+import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { FormControl } from '@angular/forms';
 
 export interface GifsState {
@@ -33,6 +33,8 @@ export class RedditService {
 
     // sources
     pagination$ = new Subject<string | null>();
+    private error$ = new Subject<string | null>();
+
 
     private subredditChanged$ = this.subredditFormControl.valueChanges.pipe(
       debounceTime(300),
@@ -46,70 +48,116 @@ export class RedditService {
         this.pagination$.pipe(
           startWith(null),
           concatMap((lastKnownGif) => 
-            this.fetchFromReddit(subreddit, lastKnownGif, 20)
+          this.fetchFromReddit(subreddit, lastKnownGif, 20).pipe(
+            expand((response, index) => {
+              const { gifs, gifsRequired, lastKnownGif } = response;
+              const remainingGifsToFetch = gifsRequired - gifs.length;
+              const maxAttempts = 15;
+        
+              const shouldKeepTrying =
+                remainingGifsToFetch > 0 &&
+                index < maxAttempts &&
+                lastKnownGif !== null;
+        
+              return shouldKeepTrying
+                ? this.fetchFromReddit(
+                  subreddit,
+                  lastKnownGif,
+                  remainingGifsToFetch
+                )
+                : EMPTY;
+            })
+          )
           )
         )
       )
     )
 
-    constructor() {
-        //reducers
-        this.gifsLoaded$.pipe(takeUntilDestroyed()).subscribe((response) =>
-            this.state.update((state) => ({
-                ...state,
-                gifs: [...state.gifs, ...response.gifs],
-                loading: false,
-                lastKnownGif: response.lastKnownGif,
-            }))
-        );
+    private handleError(err: HttpErrorResponse) {
+      // Handle specific error cases
+      if (err.status === 404 && err.url) {
+        this.error$.next(`Failed to load gifs for /r/${err.url.split('/')[4]}`);
+        return;
+      }
+  
+      // Generic error if no cases match
+      this.error$.next(err.statusText);
+    }
 
-        this.subredditChanged$.pipe(takeUntilDestroyed()).subscribe(() => {
-            this.state.update((state) => ({
-                ...state,
-                loading: true,
-                gifs: [],
-                lastKnownGif: null,
-            }));
-        });
+    constructor() {
+      //reducers
+      this.gifsLoaded$.pipe(takeUntilDestroyed()).subscribe((response) =>
+          this.state.update((state) => ({
+              ...state,
+              gifs: [...state.gifs, ...response.gifs],
+              loading: false,
+              lastKnownGif: response.lastKnownGif,
+          }))
+      );
+
+      this.subredditChanged$.pipe(takeUntilDestroyed()).subscribe(() => {
+          this.state.update((state) => ({
+              ...state,
+              loading: true,
+              gifs: [],
+              lastKnownGif: null,
+          }));
+      });
+
+      this.error$.pipe(takeUntilDestroyed()).subscribe((error) =>
+        this.state.update((state) => ({
+          ...state,
+          error,
+        }))
+      );
     }
 
     private fetchFromReddit(
-        subreddit: string,
-        after: string | null,
-        gifsRequired: number
-      ) {
-        return this.http
-          .get<RedditResponse>(
-            `https://www.reddit.com/r/${subreddit}/hot/.json?limit=100` +
-            (after ? `&after=${after}` : '')
-          )
-          .pipe(
-            catchError((err) => EMPTY),
-            map((response) => {
-              const posts = response.data.children;
-              const lastKnownGif = posts.length
-                ? posts[posts.length - 1].data.name
-                : null;
-    
-              return {
-                gifs: this.convertRedditPostsToGifs(posts),
-                gifsRequired,
-                lastKnownGif,
-              };
-            })
-          );
+      subreddit: string,
+      after: string | null,
+      gifsRequired: number
+    ) {
+      return this.http
+        .get<RedditResponse>(
+          `https://www.reddit.com/r/${subreddit}/hot/.json?limit=100` +
+          (after ? `&after=${after}` : '')
+        )
+        .pipe(
+          catchError((err) => {
+            this.handleError(err);
+            return EMPTY;
+          }),
+          map((response) => {
+            const posts = response.data.children;
+            let gifs = this.convertRedditPostsToGifs(posts);
+            let lastKnownGif = posts.length
+              ? posts[posts.length - 1].data.name
+              : null;
+  
+            if (posts.length > gifsRequired) {
+              // too many, trim
+              gifs = gifs.slice(0, gifsRequired - gifs.length);
+              lastKnownGif = gifs[gifs.length - 1]?.name ?? null;
+            }
+  
+            return {
+              gifs,
+              gifsRequired,
+              lastKnownGif,
+            };
+          })
+        );
     }
 
     private convertRedditPostsToGifs(posts: RedditPost[]) {
-        const defaultThumbnails = ['default', 'none', 'nsfw'];
+        const defaultThumbnails = ['default', 'none', 'nsfw', 'self'];
     
         return posts
           .map((post) => {
             const thumbnail = post.data.thumbnail;
             const modifiedThumbnail = defaultThumbnails.includes(thumbnail)
-              ? `/assets/${thumbnail}.png`
+              ? `/assets/${thumbnail}.jpg`
               : thumbnail;
-    
             return {
               src: this.getBestSrcForGif(post),
               author: post.data.author,

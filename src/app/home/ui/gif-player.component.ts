@@ -12,19 +12,17 @@ interface GifPlayerState {
 @Component({
     selector: 'app-gif-player',
     template: `
-        @if (status() === 'loading'){
-            <mat-progress-spinner mode="indeterminate" diameter="50" />
-        }
+      @defer () {
         <div
             [style.background]="'url(' + thumbnail + ') 50% 50% / cover no-repeat'"
             [ngStyle]="
-                status() !== 'loaded' &&
-                !['/assets/nsfw.png', '/assets/default.png'].includes(thumbnail)
-                ? {
-                    filter: 'blur(10px) brightness(0.6)',
-                    transform: 'scale(1.1)'
-                    }
-                : {}
+              status() !== 'loaded' &&
+              !['/assets/nsfw.jpg', '/assets/default.jpg'].includes(thumbnail)
+              ? {
+                  filter: 'blur(10px) brightness(0.6)',
+                  transform: 'scale(1.1)'
+                  }
+              : {}
             "
             class="preload-background"
             >
@@ -38,6 +36,11 @@ interface GifPlayerState {
                 [src]="src"
             ></video>
         </div>
+      } @loading {
+        @if (status() === 'loading'){
+          <mat-progress-spinner mode="indeterminate" diameter="50" />
+        }
+      }
     `,
     standalone: true,
     styles: [
@@ -74,78 +77,82 @@ interface GifPlayerState {
 })
 
 export class GifPlayerComponent {
-    @Input({ required: true }) src!: string;
-    @Input({ required: true }) thumbnail!: string;
+  @Input({ required: true }) src!: string;
+  @Input({ required: true }) thumbnail!: string;
 
-    // Fake new signals API
-    videoElement = signal<HTMLVideoElement | undefined>(undefined);
-    @ViewChild('gifPlayer') set video(element: ElementRef<HTMLVideoElement>) {
-        this.videoElement.set(element.nativeElement);
-    }
+  // Fake new signals API
+  videoElement = signal<HTMLVideoElement | undefined>(undefined);
+  @ViewChild('gifPlayer') set video(element: ElementRef<HTMLVideoElement>) {
+    this.videoElement.set(element?.nativeElement);
+  }
 
-    videoElement$ = toObservable(this.videoElement).pipe(
-        filter((element): element is HTMLVideoElement => !!element)
-    );
+  videoElement$ = toObservable(this.videoElement).pipe(
+    filter((element): element is HTMLVideoElement => !!element)
+  );
 
-    state = signal<GifPlayerState>({
-        playing: false,
-        status: 'initial',
+  state = signal<GifPlayerState>({
+    playing: false,
+    status: 'initial',
+  });
+
+  //selectors
+  playing = computed(() => this.state().playing);
+  status = computed(() => this.state().status);
+
+  // sources
+  togglePlay$ = new Subject<void>();
+
+  // note: unfortunately, checking "playing" is required here as subscribing to the
+  // 'loadstart' event will actually trigger a load, which we don't want unless it
+  // is supposed to be playing
+  videoLoadStart$ = combineLatest([
+    this.videoElement$,
+    toObservable(this.playing),
+  ]).pipe(
+    switchMap(([element, playing]) =>
+      playing ? fromEvent(element, 'loadstart') : EMPTY
+    )
+  );
+
+  videoLoadComplete$ = this.videoElement$.pipe(
+    switchMap((element) => fromEvent(element, 'loadeddata'))
+  );
+
+  constructor() {
+    //reducers
+    this.videoLoadStart$
+      .pipe(takeUntilDestroyed())
+      .subscribe(() =>
+        this.state.update((state) => ({ ...state, status: 'loading' }))
+      );
+
+    this.videoLoadComplete$
+      .pipe(takeUntilDestroyed())
+      .subscribe(() =>
+        this.state.update((state) => ({ ...state, status: 'loaded' }))
+      );
+
+    this.togglePlay$
+      .pipe(takeUntilDestroyed())
+      .subscribe(() =>
+        this.state.update((state) => ({ ...state, playing: !state.playing }))
+      );
+
+    // effects
+    effect(() => {
+      const video = this.videoElement();
+      const playing = this.playing();
+      const status = this.status();
+
+      if (!video) return;
+
+      if (playing && status === 'initial') {
+        video.load();
+      }
+
+      if (status === 'loaded') {
+        playing ? video.play() : video.pause();
+      }
     });
-
-    //selectors
-    playing = computed(() => this.state().playing);
-    status = computed(() => this.state().status);
-
-    // sources
-    togglePlay$ = new Subject<void>();
-
-    videoLoadStart$ = combineLatest([
-        this.videoElement$,
-        toObservable(this.playing),
-    ]).pipe(
-        switchMap(([element, playing]) =>
-            playing ? fromEvent(element, 'loadstart') : EMPTY
-        )
-    );
-
-    videoLoadComplete$ = this.videoElement$.pipe(
-        switchMap((element) => fromEvent(element, 'loadeddata'))
-    );
-
-    constructor() {
-        //reducers
-        this.videoLoadStart$
-          .pipe(takeUntilDestroyed())
-          .subscribe(() =>
-            this.state.update((state) => ({ ...state, status: 'loading' }))
-          );
-    
-        this.videoLoadComplete$
-          .pipe(takeUntilDestroyed())
-          .subscribe(() =>
-            this.state.update((state) => ({ ...state, status: 'loaded' }))
-          );
-    
-        this.togglePlay$
-          .pipe(takeUntilDestroyed())
-          .subscribe(() =>
-            this.state.update((state) => ({ ...state, playing: !state.playing }))
-          );
-
-        effect(() => {
-            const video = this.videoElement();
-            const playing = this.playing();
-            const status = this.status();
-
-            if (!video) return;
-
-            if (playing && status === 'initial') {
-                video.load();
-            }
-
-            if (status === 'loaded') {
-                playing ? video.play() : video.pause();
-            }
-        });
-    }
+  }
 }
