@@ -1,9 +1,11 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Gif, RedditPost, RedditResponse } from '../interfaces';
-import { EMPTY, Subject, catchError, concatMap, debounceTime, distinctUntilChanged, expand, map, of, startWith, switchMap } from 'rxjs';
+import { EMPTY, Subject, catchError, concatMap, debounceTime, distinctUntilChanged, expand, map, merge, of, startWith, switchMap } from 'rxjs';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { FormControl } from '@angular/forms';
+import { connect } from 'ngxtension/connect';
+
 
 export interface GifsState {
   gifs: Gif[];
@@ -86,30 +88,24 @@ export class RedditService {
 
     constructor() {
       //reducers
-      this.gifsLoaded$.pipe(takeUntilDestroyed()).subscribe((response) =>
-          this.state.update((state) => ({
-              ...state,
-              gifs: [...state.gifs, ...response.gifs],
-              loading: false,
-              lastKnownGif: response.lastKnownGif,
+      const nextState$ = merge(
+        this.subredditChanged$.pipe(
+          map(() => ({
+            loading: true,
+            gifs: [],
+            lastKnownGif: null
           }))
-      );
+        ),
+        this.error$.pipe(map((error) => ({ error })))
+      )
 
-      this.subredditChanged$.pipe(takeUntilDestroyed()).subscribe(() => {
-          this.state.update((state) => ({
-              ...state,
-              loading: true,
-              gifs: [],
-              lastKnownGif: null,
-          }));
-      });
-
-      this.error$.pipe(takeUntilDestroyed()).subscribe((error) =>
-        this.state.update((state) => ({
-          ...state,
-          error,
-        }))
-      );
+      connect(this.state)
+        .with(nextState$)
+        .with(this.gifsLoaded$, (state, response) => ({
+          gifs: [...state.gifs, ...response.gifs],
+          loading: false,
+          lastKnownGif: response.lastKnownGif,
+        }));
     }
 
     private fetchFromReddit(
